@@ -1,0 +1,19 @@
+{
+  "name": "highlights",
+  "version": "0.3.0",
+  "description": "Live, color-coded highlights of Claude's replies in a side pane",
+  "author": { "name": "Ala Abu Rayyan", "url": "https://github.com/alaaburayyan" },
+  "homepage": "https://github.com/alaaburayyan/claude-highlights",
+  "repository": "https://github.com/alaaburayyan/claude-highlights",
+  "license": "MIT",
+  "keywords": ["highlights", "summary", "pane", "mod"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "maxHighlights": {
+      "type": "number",
+      "title": "Highlights per question",
+      "description": "Most highlights kept for each question's reply; 0 means unlimited",
+      "default": 5
+    }
+  }
+}

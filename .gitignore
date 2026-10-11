@@ -1,0 +1,5 @@
+# Written by the Claude Code engine when the mod loads; regenerated per build
+.claude-plugin/types/
+node_modules/
+.DS_Store
+Thumbs.db

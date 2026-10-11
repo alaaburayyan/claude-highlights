@@ -1,0 +1,16 @@
+{
+  "name": "highlights",
+  "owner": { "name": "Ala Abu Rayyan", "url": "https://github.com/alaaburayyan" },
+  "description": "Highlights: live, color-coded summaries of Claude's replies in a side pane",
+  "plugins": [
+    {
+      "name": "highlights",
+      "source": "./",
+      "description": "Live, color-coded highlights of Claude's replies in a side pane",
+      "version": "0.3.0",
+      "author": { "name": "Ala Abu Rayyan" },
+      "license": "MIT",
+      "keywords": ["highlights", "summary", "pane"]
+    }
+  ]
+}
