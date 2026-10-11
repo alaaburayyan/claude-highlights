@@ -26,7 +26,9 @@ Answer `y` to add the marketplace, pick a scope (user scope loads it in every se
 ## Use
 
 - `/highlights` shows or hides the pane.
-- The pane header shows how many Haiku tokens the highlights have used this session.
+- The top of the pane holds the color legend and "Highlights Tokens", the Haiku tokens the highlights have used this session (one line when the pane is wide, two when narrow).
+- The bottom of the pane shows your plan's **Session** (5-hour) and **Weekly** usage as percentages: green, then orange from 75%, red from 90%. They show `–` until Claude Code has a reading, and stay `–` when you're on an API key rather than a subscription.
+- The header and footer stay put; the points scroll between them. The pane follows the newest points until you scroll up, and follows again once you scroll back to the bottom.
 - Interrupting a reply clears its highlights.
 
 ## Options

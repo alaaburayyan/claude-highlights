@@ -1,6 +1,6 @@
 {
   "name": "highlights",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Live, color-coded highlights of Claude's replies in a side pane",
   "author": { "name": "Ala Abu Rayyan", "url": "https://github.com/alaaburayyan" },
   "homepage": "https://github.com/alaaburayyan/claude-highlights",
