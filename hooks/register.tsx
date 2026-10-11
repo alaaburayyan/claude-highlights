@@ -17,6 +17,9 @@ const isOpen = atom({ plugin: 'highlights', key: 'isOpen' } as const, false)
 
 const COLOR: Record<Level, string> = { green: 'success', orange: 'warning', red: 'error', blue: 'suggestion' }
 const OLD_BACKGROUND = 'subtle'
+const LEGEND = '🔵 step  🟢 done  🟠 notice  🔴 act'
+// Each emoji is two cells wide and two UTF-16 units long, so the length is the width.
+const LEGEND_COLUMNS = LEGEND.length
 
 const RULES = `You extract the points worth noting from an AI coding assistant's reply, for a reader who will not read the full reply.
 
@@ -360,18 +363,34 @@ export const register: Register = (on, options) => {
     const list = await read($, replies)
     const current = await read($, currentTurnId)
     const spent = await read($, tokens)
+    const usage = `Highlights Tokens: ${spent.toLocaleString()}`
+    // The legend and the token count share one line where the pane is wide enough, else take two.
+    const isOneLine = e.props.bodyColumns >= LEGEND_COLUMNS + 3 + usage.length
 
     return (
       <Box flexDirection="column" overflow="hidden">
-        <Text dimColor>
-          🔵 step  🟢 done  🟠 notice  🔴 act · Haiku tokens: {spent.toLocaleString()}
-        </Text>
+        {isOneLine ? (
+          <Text dimColor>
+            {LEGEND} · {usage}
+          </Text>
+        ) : (
+          <Box flexDirection="column">
+            <Text dimColor>{LEGEND}</Text>
+            <Text dimColor>{usage}</Text>
+          </Box>
+        )}
         {list.length === 0 && <Text dimColor>Highlights of Claude's replies appear here as they stream.</Text>}
-        {list.map(reply => {
+        {list.map((reply, index) => {
           const isOld = reply.turnId !== current
           const background = isOld ? OLD_BACKGROUND : undefined
           return (
-            <Box key={reply.turnId} flexDirection="column" backgroundColor={background} paddingX={1} marginTop={1}>
+            <Box
+              key={reply.turnId}
+              flexDirection="column"
+              backgroundColor={background}
+              paddingX={1}
+              marginTop={index === 0 ? 0 : 1}
+            >
               <Text bold backgroundColor={background}>
                 › {reply.prompt}
               </Text>

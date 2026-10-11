@@ -7,7 +7,7 @@
       "name": "highlights",
       "source": "./",
       "description": "Live, color-coded highlights of Claude's replies in a side pane",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": { "name": "Ala Abu Rayyan" },
       "license": "MIT",
       "keywords": ["highlights", "summary", "pane"]

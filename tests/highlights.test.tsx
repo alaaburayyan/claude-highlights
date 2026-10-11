@@ -244,3 +244,24 @@ test('a step Claude announces in its text comes back blue from the summary', asy
   expect(step).toBeDefined()
   expect(JSON.stringify(step?.children)).toContain('suggestion')
 })
+
+test('the legend and token count head the pane: one line when wide, two when narrow', async ($, on) => {
+  const clock = mock.clock(on)
+  stage(on, [])
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await ask($, clock, 't1')
+
+  const mount = (bodyColumns: number) =>
+    $.ui.mount({ plugin: 'highlights', surface: 'terminal', component: 'Pane', props: { title: 'Highlights', bodyColumns } as never, requestId: 'highlights' })
+
+  const wide = await mount(120)
+  expect((await wide.find({ type: 'Text', text: 'Highlights Tokens: 2' }))?.text).toContain('🔵 step')
+  await wide.unmount()
+
+  const narrow = await mount(30)
+  const legend = await narrow.find({ type: 'Text', text: '🔵 step' })
+  const usage = await narrow.find({ type: 'Text', text: 'Highlights Tokens: 2' })
+  expect(legend?.text).toBe('🔵 step  🟢 done  🟠 notice  🔴 act')
+  expect(usage?.text).toBe('Highlights Tokens: 2')
+  expect(await narrow.find({ type: 'Text', text: 'One is done' })).toBeDefined()
+})

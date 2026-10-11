@@ -26,7 +26,7 @@ Answer `y` to add the marketplace, pick a scope (user scope loads it in every se
 ## Use
 
 - `/highlights` shows or hides the pane.
-- The pane header shows how many Haiku tokens the highlights have used this session.
+- The top of the pane holds the color legend and "Highlights Tokens", the Haiku tokens the highlights have used this session (one line when the pane is wide, two when narrow). The points follow right below.
 - Interrupting a reply clears its highlights.
 
 ## Options
