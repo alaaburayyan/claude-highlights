@@ -265,3 +265,84 @@ test('the legend and token count head the pane: one line when wide, two when nar
   expect(usage?.text).toBe('Highlights Tokens: 2')
   expect(await narrow.find({ type: 'Text', text: 'One is done' })).toBeDefined()
 })
+
+const dock = (bodyRows: number) => ({ title: 'Highlights', bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows } })
+
+function wheel($: any, by: number) {
+  return $.ui.scroll({ component: 'Pane', requestId: 'highlights', offset: 0, by, bodyRows: 10, contentRows: 10, origin: { kind: 'person' } })
+}
+
+test('the footer shows the session and weekly usage, updated as the engine measures it', async ($, on) => {
+  stage(on, [])
+  on('session.measure', async (_$: unknown, e: any) => ({ changed: e.changed }))
+  on('session.usage', async () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 23.4 }] } }) as never)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'highlights', surface: 'terminal', component: 'Pane', props: dock(10) as never, requestId: 'highlights' })
+  const footer = async () => (await lines(ui)).at(-1)
+  expect(await footer()).toBe('Session 23% · Weekly –')
+
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 91 }, { kind: 'seven_day', percentUsed: 40.6 }],
+    changed: ['rateLimits'],
+  } as never)
+  expect(await footer()).toBe('Session 91% · Weekly 41%')
+  const colorOf = async (text: string) => (await ui.findAll({ type: 'Text', text })).find((t: any) => t.text === text)?.props.color
+  expect(await colorOf('91%')).toBe('error')
+  expect(await colorOf('41%')).toBe('success')
+})
+
+test('header and footer stay put while the points scroll between them, following the newest', async ($, on) => {
+  const clock = mock.clock(on)
+  stage(on, [])
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  for (const turnId of ['t1', 't2', 't3', 't4']) {
+    await ask($, clock, turnId)
+  }
+  // Each question takes a prompt row and five points, with a gap between: far more than 8 rows.
+  const ui = await $.ui.mount({ plugin: 'highlights', surface: 'terminal', component: 'Pane', props: dock(8) as never, requestId: 'highlights' })
+  const texts = () => lines(ui)
+
+  let shown = await texts()
+  expect(shown[0]).toContain('Highlights Tokens')
+  expect(shown[shown.length - 1]).toContain('Session')
+  expect(shown.length).toBe(8)
+  expect(shown).toContain('● Five is done.')
+  expect(shown.join('\n')).not.toContain('question t1')
+
+  // Scrolling up leaves the newest behind, keeps header and footer, and holds still as new points arrive.
+  await wheel($, -100)
+  shown = await texts()
+  expect(shown[0]).toContain('Highlights Tokens')
+  expect(shown[1]).toBe('› question t1')
+  expect(shown[shown.length - 1]).toContain('Session')
+  await ask($, clock, 't5')
+  expect((await texts())[1]).toBe('› question t1')
+
+  // Back to the bottom follows the newest again.
+  await wheel($, 1000)
+  await ask($, clock, 't6')
+  expect((await texts()).join('\n')).toContain('› question t6')
+})
+
+// The pane as its rows read on screen: each top-level Text one line, a spacer Box its height in blank lines.
+async function lines(ui: any): Promise<string[]> {
+  const out: string[] = []
+  const textOf = (node: any): string =>
+    typeof node === 'string' ? node : (node?.children ?? []).map(textOf).join('')
+  const walk = (node: any) => {
+    if (!node || typeof node === 'string') return
+    if (node.type === 'Text') {
+      out.push(textOf(node))
+      return
+    }
+    if (node.type === 'Box' && typeof node.props?.height === 'number' && !(node.children ?? []).length) {
+      for (let i = 0; i < node.props.height; i++) out.push('')
+      return
+    }
+    for (const child of node.children ?? []) walk(child)
+  }
+  walk(await ui.drawn())
+  return out
+}

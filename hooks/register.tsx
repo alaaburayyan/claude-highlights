@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Bullet, Level, Reply } from '../types'
+import type { Bullet, Level, Limit, Reply } from '../types'
 
 const PANE = 'highlights'
 const TITLE = 'Highlights'
@@ -14,12 +14,15 @@ const replies = atom({ plugin: 'highlights', key: 'replies' } as const, [])
 const currentTurnId = atom({ plugin: 'highlights', key: 'currentTurnId' } as const, '')
 const tokens = atom({ plugin: 'highlights', key: 'tokens' } as const, 0)
 const isOpen = atom({ plugin: 'highlights', key: 'isOpen' } as const, false)
+const limits = atom({ plugin: 'highlights', key: 'limits' } as const, [])
+const scroll = atom({ plugin: 'highlights', key: 'scroll' } as const, { offset: 0, isFollowing: true })
 
 const COLOR: Record<Level, string> = { green: 'success', orange: 'warning', red: 'error', blue: 'suggestion' }
 const OLD_BACKGROUND = 'subtle'
 const LEGEND = '🔵 step  🟢 done  🟠 notice  🔴 act'
 // Each emoji is two cells wide and two UTF-16 units long, so the length is the width.
 const LEGEND_COLUMNS = LEGEND.length
+const EMPTY = "Highlights of Claude's replies appear here as they stream."
 
 const RULES = `You extract the points worth noting from an AI coding assistant's reply, for a reader who will not read the full reply.
 
@@ -47,8 +50,8 @@ const interrupted = new Set<string>()
 let isBusy = false
 // Most highlights per reply, from the `maxHighlights` option; 0 is no limit.
 let limit = DEFAULT_LIMIT
-// True while the person's window is on the pane's last rows; scrolling up turns it off, back down on.
-let isFollowing = true
+// Where the last drawing left the points' window, so a scroll moves from what the person saw.
+let shown = { offset: 0, maxOffset: 0 }
 
 function readLimit(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_LIMIT
@@ -180,7 +183,6 @@ async function summarize($: EngineInterface, turnId: string, text: string) {
   const bullets = parse(result.text)
   if (bullets.length) {
     await patchReply($, turnId, reply => ({ ...reply, bullets: capped([...reply.bullets, ...bullets]) }))
-    await scrollToEnd($)
   }
 }
 
@@ -192,14 +194,6 @@ async function addStep($: EngineInterface, turnId: string, title: string) {
     const isRepeat = reply.bullets.some(b => b.level === 'blue' && b.text.toLowerCase() === title.toLowerCase())
     return isRepeat ? reply : { ...reply, bullets: [...reply.bullets, { level: 'blue', text: title }] }
   })
-  await scrollToEnd($)
-}
-
-// Newest at the bottom, as in the transcript: keep the pane's window on the end, unless the person scrolled up.
-async function scrollToEnd($: EngineInterface) {
-  if (isFollowing && (await read($, isOpen))) {
-    await $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined)
-  }
 }
 
 async function drain($: EngineInterface) {
@@ -245,6 +239,10 @@ export const register: Register = (on, options) => {
       void drain($)
     })
     void openPane($)
+    void $.session
+      .usage()
+      .then(usage => update($, limits, () => toLimits(usage.rateLimits)))
+      .catch(() => undefined)
 
     return next(e)
   })
@@ -297,10 +295,18 @@ export const register: Register = (on, options) => {
     return ran
   })
 
-  // Where the person's own scroll lands decides whether new highlights pull the window down.
-  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    if (e.origin.kind === 'person') {
-      isFollowing = e.offset >= e.contentRows - e.bodyRows
+  // The header and footer stay put, so the pane scrolls its points itself. Newest at the bottom, as in the
+  // transcript: the window keeps to the end until the person scrolls up, and follows again once back down.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const offset = Math.min(Math.max(shown.offset + e.by, 0), shown.maxOffset)
+    await update($, scroll, () => ({ offset, isFollowing: offset >= shown.maxOffset }))
+    return {}
+  })
+
+  // The session's and the week's usage, as the engine measures them after each turn.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits')) {
+      await update($, limits, () => toLimits(e.rateLimits))
     }
     return next(e)
   })
@@ -319,7 +325,6 @@ export const register: Register = (on, options) => {
     const reply: Reply = { turnId: e.turnId, prompt: preview, bullets: [], isFailed: false, isInterrupted: false }
     await update($, replies, list => [...list, reply].slice(-KEEP_REPLIES))
     await update($, currentTurnId, () => e.turnId)
-    await scrollToEnd($)
 
     return next(e)
   })
@@ -363,62 +368,226 @@ export const register: Register = (on, options) => {
     const list = await read($, replies)
     const current = await read($, currentTurnId)
     const spent = await read($, tokens)
+    const readings = await read($, limits)
+    const view = await read($, scroll)
+
     const usage = `Highlights Tokens: ${spent.toLocaleString()}`
     // The legend and the token count share one line where the pane is wide enough, else take two.
     const isOneLine = e.props.bodyColumns >= LEGEND_COLUMNS + 3 + usage.length
+    const headerRows = isOneLine ? 1 : 2
+    const footerRows = 1
+
+    // The points are laid out row by row, so the window over them can be cut to the rows between header
+    // and footer. A surface that gives no size draws them all.
+    const bodyRows = e.props.scroll?.bodyRows
+    const columns = e.props.bodyColumns
+    const textColumns = columns > 0 ? Math.max(columns - PADDING - PREFIX, 8) : Infinity
+    const rows = layout(list, current, textColumns)
+    const middleRows = bodyRows ? Math.max(bodyRows - headerRows - footerRows, 1) : Infinity
+    const maxOffset = Number.isFinite(middleRows) ? Math.max(rows.length - middleRows, 0) : 0
+    const offset = view.isFollowing ? maxOffset : Math.min(view.offset, maxOffset)
+    shown = { offset, maxOffset }
+    const visible = Number.isFinite(middleRows) ? rows.slice(offset, offset + middleRows) : rows
+    // Docked beside the transcript, the footer sits on the pane's last row; inline, the frame fits the tree.
+    const filler = e.props.placement === 'dock' && Number.isFinite(middleRows) ? middleRows - visible.length : 0
+
+    const session = readings.find(reading => reading.kind === 'five_hour')
+    const weekly = readings.find(reading => reading.kind === 'seven_day')
 
     return (
       <Box flexDirection="column" overflow="hidden">
         {isOneLine ? (
-          <Text dimColor>
+          <Text dimColor wrap="truncate-end">
             {LEGEND} · {usage}
           </Text>
         ) : (
           <Box flexDirection="column">
-            <Text dimColor>{LEGEND}</Text>
-            <Text dimColor>{usage}</Text>
+            <Text dimColor wrap="truncate-end">
+              {LEGEND}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {usage}
+            </Text>
           </Box>
         )}
-        {list.length === 0 && <Text dimColor>Highlights of Claude's replies appear here as they stream.</Text>}
-        {list.map((reply, index) => {
-          const isOld = reply.turnId !== current
-          const background = isOld ? OLD_BACKGROUND : undefined
-          return (
-            <Box
-              key={reply.turnId}
-              flexDirection="column"
-              backgroundColor={background}
-              paddingX={1}
-              marginTop={index === 0 ? 0 : 1}
-            >
-              <Text bold backgroundColor={background}>
-                › {reply.prompt}
-              </Text>
-              {reply.bullets.map(bullet => (
-                <Text backgroundColor={background}>
-                  <Text color={COLOR[bullet.level]}>● </Text>
-                  {bullet.text}
-                </Text>
-              ))}
-              {reply.isInterrupted && (
-                <Text dimColor backgroundColor={background}>
-                  Interrupted, highlights cleared.
-                </Text>
-              )}
-              {reply.bullets.length === 0 && !reply.isFailed && !reply.isInterrupted && (
-                <Text dimColor backgroundColor={background}>
-                  {isOld ? 'Nothing worth noting.' : 'Listening…'}
-                </Text>
-              )}
-              {reply.isFailed && (
-                <Text dimColor backgroundColor={background}>
-                  Some highlights unavailable (model call failed).
-                </Text>
-              )}
-            </Box>
-          )
-        })}
+        <Box flexDirection="column" overflow="hidden">
+          {groups(visible).map(group => {
+            if (!group.turnId) {
+              return group.rows.map(row => <Text dimColor>{row.text || ' '}</Text>)
+            }
+            const background = group.isOld ? OLD_BACKGROUND : undefined
+            return (
+              <Box key={group.turnId} flexDirection="column" backgroundColor={background} paddingX={1}>
+                {group.rows.map(row => {
+                  if (row.kind === 'prompt') {
+                    return (
+                      <Text bold backgroundColor={background} wrap="truncate-end">
+                        {row.isFirst ? '› ' : '  '}
+                        {row.text}
+                      </Text>
+                    )
+                  }
+                  if (row.kind === 'bullet') {
+                    return (
+                      <Text backgroundColor={background} wrap="truncate-end">
+                        {row.isFirst ? <Text color={COLOR[row.level!]}>● </Text> : '  '}
+                        {row.text}
+                      </Text>
+                    )
+                  }
+                  return (
+                    <Text dimColor backgroundColor={background} wrap="truncate-end">
+                      {row.text}
+                    </Text>
+                  )
+                })}
+              </Box>
+            )
+          })}
+        </Box>
+        {filler > 0 && <Box height={filler} />}
+        <Text wrap="truncate-end">
+          <Text dimColor>Session </Text>
+          <Text color={usageColor(session)}>{percent(session)}</Text>
+          <Text dimColor> · Weekly </Text>
+          <Text color={usageColor(weekly)}>{percent(weekly)}</Text>
+        </Text>
       </Box>
     )
   })
+}
+
+// Cells a row gives up before its text: the reply's padding at both sides, then the bullet or prompt mark.
+const PADDING = 2
+const PREFIX = 2
+
+type Row = {
+  turnId: string | null
+  isOld: boolean
+  kind: 'prompt' | 'bullet' | 'note' | 'gap'
+  level?: Level
+  text: string
+  isFirst: boolean
+}
+
+// Every reply as the rows it takes at this width: its prompt, its points, its notes, a gap between replies.
+function layout(list: Reply[], current: string, columns: number): Row[] {
+  if (list.length === 0) {
+    return wrap(EMPTY, columns + PREFIX).map(text => ({ turnId: null, isOld: false, kind: 'note', text, isFirst: true }))
+  }
+  const rows: Row[] = []
+  list.forEach((reply, index) => {
+    const isOld = reply.turnId !== current
+    const base = { turnId: reply.turnId, isOld }
+    if (index > 0) {
+      rows.push({ turnId: null, isOld, kind: 'gap', text: '', isFirst: true })
+    }
+    wrap(reply.prompt, columns).forEach((text, i) => rows.push({ ...base, kind: 'prompt', text, isFirst: i === 0 }))
+    for (const bullet of reply.bullets) {
+      wrap(bullet.text, columns).forEach((text, i) =>
+        rows.push({ ...base, kind: 'bullet', level: bullet.level, text, isFirst: i === 0 }),
+      )
+    }
+    const isWaiting = reply.bullets.length === 0 && !reply.isFailed && !reply.isInterrupted
+    const notes = [
+      reply.isInterrupted ? 'Interrupted, highlights cleared.' : '',
+      isWaiting ? (isOld ? 'Nothing worth noting.' : 'Listening…') : '',
+      reply.isFailed ? 'Some highlights unavailable (model call failed).' : '',
+    ]
+    for (const note of notes.filter(Boolean)) {
+      wrap(note, columns + PREFIX).forEach(text => rows.push({ ...base, kind: 'note', text, isFirst: true }))
+    }
+  })
+  return rows
+}
+
+type Group = { turnId: string | null; isOld: boolean; rows: Row[] }
+
+// Consecutive rows of one reply drawn together, so the reply's background spans them.
+function groups(rows: Row[]): Group[] {
+  const out: Group[] = []
+  for (const row of rows) {
+    const last = out[out.length - 1]
+    if (last && row.turnId && last.turnId === row.turnId) {
+      last.rows.push(row)
+    } else {
+      out.push({ turnId: row.turnId, isOld: row.isOld, rows: [row] })
+    }
+  }
+  return out
+}
+
+// Word wrap by terminal cells; a word wider than the row is cut.
+function wrap(text: string, columns: number): string[] {
+  if (!Number.isFinite(columns)) {
+    return [text]
+  }
+  const lines: string[] = []
+  let line = ''
+  let width = 0
+  for (const word of text.split(' ').filter(Boolean)) {
+    const wordWidth = cells(word)
+    if (width > 0 && width + 1 + wordWidth <= columns) {
+      line += ' ' + word
+      width += 1 + wordWidth
+      continue
+    }
+    if (width > 0) {
+      lines.push(line)
+    }
+    line = ''
+    width = 0
+    for (const char of word) {
+      const charWidth = cells(char)
+      if (width + charWidth > columns && width > 0) {
+        lines.push(line)
+        line = ''
+        width = 0
+      }
+      line += char
+      width += charWidth
+    }
+  }
+  if (line || lines.length === 0) {
+    lines.push(line)
+  }
+  return lines
+}
+
+// Terminal cells a string takes: wide scripts and emoji two, combining marks none.
+function cells(text: string): number {
+  let width = 0
+  for (const char of text) {
+    const code = char.codePointAt(0)!
+    if ((code >= 0x300 && code <= 0x36f) || (code >= 0x200b && code <= 0x200f) || code === 0xfe0f) {
+      continue
+    }
+    const isWide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      code >= 0x1f300
+    width += isWide ? 2 : 1
+  }
+  return width
+}
+
+function toLimits(windows: { kind: string; percentUsed: number }[]): Limit[] {
+  return windows.map(({ kind, percentUsed }) => ({ kind, percentUsed }))
+}
+
+function percent(reading: Limit | undefined): string {
+  return reading ? `${Math.round(reading.percentUsed)}%` : '–'
+}
+
+// Green with room to spare, orange from 75%, red from 90%.
+function usageColor(reading: Limit | undefined): string | undefined {
+  if (!reading) {
+    return undefined
+  }
+  return reading.percentUsed >= 90 ? 'error' : reading.percentUsed >= 75 ? 'warning' : 'success'
 }
